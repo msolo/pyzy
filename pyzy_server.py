@@ -5,6 +5,7 @@ import logging
 import _multiprocessing
 import optparse
 import os
+import pwd
 import signal
 import socket
 import struct
@@ -12,7 +13,9 @@ import sys
 import time
 import traceback
 
-socket_name = '/tmp/pyzy.sock'
+def socket_name():
+  username = pwd.getpwuid(os.getuid()).pw_name
+  return '/tmp/pyzy-%s.sock' % username
 
 class PyZySystemExit(SystemExit):
   pass
@@ -25,7 +28,7 @@ class PyZyServer(object):
 
   def connect(self):
     self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    self.sock.bind(socket_name)
+    self.sock.bind(socket_name())
     self.sock.listen(5)
 
   def recv_int(self, client_sock):
@@ -137,7 +140,7 @@ def main():
     pass
   finally:
     try:
-      os.remove(socket_name)
+      os.remove(socket_name())
     except Exception as e:
       print >> sys.stderr, e
 
