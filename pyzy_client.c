@@ -1,19 +1,26 @@
+#define _POSIX_SOURCE
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 
+#include <arpa/inet.h>
+
 #include <errno.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "pyzy_server.h"
 
+extern char **environ;
 static char global_error_string[256];
 static int remote_pid = 0;
 
@@ -43,6 +50,9 @@ int fatalf(const char *fmt, ...) {
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
   va_end(ap);
+  if (errno > 0) {
+    perror("errno info");
+  }
   exit(1);
 }
 
@@ -78,8 +88,10 @@ int open_unix_socket(const char *path) {
 
   if ((fd = socket(AF_LOCAL, SOCK_STREAM, 0)) < 0)
     return seterr("socket() failed: %s", strerror(errno));
-  if (connect(fd, (struct sockaddr *)&addr, addrlen) < 0)
+  if (connect(fd, (struct sockaddr *)&addr, addrlen) < 0) {
+    close(fd);
     return seterr("connect() failed: %s", strerror(errno));
+  }
   return fd;
 }
 
@@ -137,33 +149,14 @@ int send_string(int unix_fd, char* _string) {
 
 int send_launch_ctl(int unix_fd, int argc, char** argv) {
   int rc;
-  
-  char env[16*1024];
-  char* environment_var_list[] = {
-    "PYTHONPATH",
-    NULL,
-  };
-  
-  env[0] = '\0';
-  char* env_var_name = NULL;
-  char* env_val = NULL;
-  int i = 0;
+  int envc = 0;
   while (1) {
-    env_var_name = environment_var_list[i++];
-    if (!env_var_name) {
+    if (environ[envc] == NULL) {
       break;
     }
-    env_val = getenv(env_var_name);
-    if (!env_val) {
-      continue;
-    }
-    strcat(env, env_var_name);
-    strcat(env, "=");
-    strcat(env, getenv(env_var_name));
-    strcat(env, "\n");
+    envc++;
   }
-  debug_logf("env: %s\n", env);
-
+  
   char cwd[2048];
   if (getcwd(cwd, sizeof(cwd)) == NULL) {
     return -1;
@@ -173,13 +166,18 @@ int send_launch_ctl(int unix_fd, int argc, char** argv) {
   if ((rc = send_string(unix_fd, cwd))) {
     return rc;
   }
-  if ((rc = send_string(unix_fd, env))) {
+  if ((rc = send_int(unix_fd, envc))) {
     return rc;
+  }
+  for (int i = 0; i < envc; i++) {
+    if ((rc = send_string(unix_fd, environ[i]))) {
+      return rc;
+    }
   }
   if ((rc = send_int(unix_fd, argc))) {
     return rc;
   }
-  for (i = 0; i < argc; i++) {
+  for (int i = 0; i < argc; i++) {
     if ((rc = send_string(unix_fd, argv[i]))) {
       return rc;
     }
@@ -229,12 +227,102 @@ void signal_relay(int signal_num) {
   //exit(1);
 }
 
-int main(int argc, char **argv) {
-  int unix_fd;
-  if ((unix_fd = open_unix_socket(unix_socket_path())) < 0) {
-    fatalf("open_unix_socket failed: %s\n", global_error_string);
+void exec_pyzy_server() {
+  int rc;
+  int rdwr_pipefds[2];
+  
+  if ((rc = pipe(rdwr_pipefds))) {
+    fatalf("exec_pyzy_server failed creating pipe");
   }
+  
+  pid_t pid = fork();
+  if (pid == 0) {
+    // child
+    // close unused write fd in the child
+    close(rdwr_pipefds[1]);
+    pid_t sid = setsid();
+    if (sid < 0) {
+      fatalf("exec_pyzy_server failed setsid\n");
+    }
 
+    int wr_fd = open("/dev/null", O_WRONLY);
+    dup2(rdwr_pipefds[0], STDIN_FILENO);
+    close(rdwr_pipefds[0]);
+    dup2(wr_fd, STDOUT_FILENO);
+    dup2(wr_fd, STDERR_FILENO);
+    close(wr_fd);
+
+    char script_path[256];
+    if (sprintf(script_path, "/dev/fd/%d", rdwr_pipefds[0]) < 0 ) {
+      fatalf("exec_pyzy_server failed creating path\n");
+    }
+    char* script = malloc(pyzy_server_py_len+1);
+    memcpy(script, pyzy_server_py, pyzy_server_py_len);
+    script[pyzy_server_py_len] = '\0';
+
+    char* argv[] = {
+      "pyzy (server)", "-ESs", "-",
+      NULL,
+    };
+    char* envp[] = {
+      NULL,
+    };
+    if ((rc = execvp("/usr/local/bin/python", argv))) {
+      fatalf("exec_pyzy_server failed: %s\n", rc);
+    }
+  } else {
+    // parent
+    // close unused read fd in the parent
+    close(rdwr_pipefds[0]);
+    ssize_t total = 0;
+    ssize_t written = 0;
+    while (1) {
+      written = write(rdwr_pipefds[1], pyzy_server_py, pyzy_server_py_len);
+      if (written < 0 && errno != EINTR) {
+        fatalf("exec_pyzy_server failed writing script\n");
+      }
+      total += written;
+      if (total == pyzy_server_py_len) {
+        break;
+      }
+    }
+    close(rdwr_pipefds[1]);
+  }
+}
+
+
+int main(int argc, char **argv) {
+  /* int script_argc = argc; */
+  /* char **script_argv = argv; */
+  /* int shutdown = 0; */
+  /* int cache_script = 0; */
+  /* for (int i = 1; i < argc; i++) { */
+  /*   if (argv[i][0] == '-') { */
+  /*     if (strcmp(argv[i], "--shutdown") == 0) { */
+  /*     } */
+  /*   } */
+  /* } */
+
+  int unix_fd;
+  int started = 0;
+  for (int i = 0; i < 10; i++) {
+    if ((unix_fd = open_unix_socket(unix_socket_path())) < 0) {
+      if (errno == ENOENT) {
+        if (!started) {
+          exec_pyzy_server();
+          started = 1;
+        }
+        struct timespec sleep;
+        sleep.tv_sec = 0;
+        sleep.tv_nsec = 100000000; // 100ms
+        nanosleep(&sleep, NULL);
+        continue;
+      }
+      fatalf("open_unix_socket failed: %s\n", global_error_string);
+    }
+    break;
+  }
+  
   if (send_launch_ctl(unix_fd, argc, argv) < 0) {
     fatalf("send_launch_ctl failed: %s\n", global_error_string);
   }
