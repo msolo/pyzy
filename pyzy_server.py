@@ -4,7 +4,6 @@ import array
 import errno
 import logging
 import _multiprocessing
-import optparse
 import os
 import pwd
 import signal
@@ -14,6 +13,48 @@ import sys
 import threading
 import time
 import traceback
+
+
+def preload():
+  import ConfigParser
+  import StringIO
+  import argparse
+  import base64
+  import cPickle
+  import cStringIO
+  import csv
+  import collections
+  import datetime
+  import email
+  import fcntl
+  import fnmatch
+  import functools
+  import glob
+  import gzip
+  import hashlib
+  import io
+  import itertools
+  import json
+  import md5
+  import mimetools
+  import operator
+  import pickle
+  import pipes
+  import random
+  import re
+  import sha
+  import shlex
+  import shutil
+  import string
+  import subprocess
+  import tarfile
+  import tempfile
+  import urllib2
+  import urlparse
+  import zipfile
+  import zlib
+  
+default_python_path = '/usr/bin/python'
 
 def socket_name():
   try:
@@ -41,7 +82,7 @@ def recv(sock, size):
     except socket.error as e:
       # This socket is in blocking mode, but for reasons I don't
       # understand, we still get EAGAIN.
-      if e[0] == errno.EAGAIN:
+      if e.errno == errno.EAGAIN:
         continue
       raise
 
@@ -113,13 +154,15 @@ class PyZyServer(object):
     except IndexError:
       error_str = 'no script path specified in argv'
 
-    # pyzy_python = client_env.get('PYZY_PYTHON')
-    # if pyzy_python and pyzy_python != sys.executable:
-    #   error_str = 'PYZY_PYTHON mismatch: %s != %s' % (os.path.realpath(pyzy_python), os.path.realpath(sys.executable))
-    if not script in self.script_set:
+    client_python = client_env.get('PYZY_PYTHON', default_python_path)
+    server_python = old_env.get('PYZY_PYTHON')
+
+    if client_python != server_python:
+      error_str = 'PYZY_PYTHON mismatch: %s != %s' % (client_python, server_python)
+    elif not script in self.script_set:
       if 'PYZY_CACHE_SCRIPT' in client_env:
         # Pass empty dict so __name__ != __main__.
-        _execfile(script, {})
+        _execfile(script, {'__pyzy_preload__':True})
         self.script_set.add(script)
         # Protect ourselves against bad practices.
         threads = threading.enumerate()
@@ -195,7 +238,7 @@ class PyZyServer(object):
         client_sock, addr = self.sock.accept()
         self.handle_connection(client_sock)
       except socket.error as e:
-        if e[0] == errno.EINTR:
+        if e.errno == errno.EINTR:
           continue
         client_sock.close()
         logging.error('socket error: %s', e)
@@ -205,7 +248,6 @@ def sigchld_handler(signum, frame):
     while os.waitpid(-1, os.WNOHANG)[0]:
       pass
   except OSError as e:
-    #if e[0] != errno.ECHILD:
     if e.errno != errno.ECHILD:
       logging.error('waitpid failed: %s', e)
 
@@ -217,6 +259,7 @@ def main():
     logging.basicConfig()
     signal.signal(signal.SIGCHLD, sigchld_handler)
     signal.signal(signal.SIGTERM, sigterm_handler)
+    preload()
     server = PyZyServer()
     server.bind_and_listen()
     server.serve_forever()

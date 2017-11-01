@@ -22,7 +22,7 @@
 extern char **environ;
 static char global_error_string[256];
 static int remote_pid = 0;
-
+static char* default_python_path = "/usr/bin/python";
 
 int seterr(const char *fmt, ...) {
   va_list ap;
@@ -248,7 +248,11 @@ void exec_pyzy_server() {
       fatalf("pyzy: exec_pyzy_server failed setsid\n");
     }
 
-    int wr_fd = open("/dev/null", O_WRONLY);
+    char* outfile = "/dev/null";
+    if (getenv("PYZY_DEBUG") != NULL) {
+      outfile = "/dev/stderr";
+    }
+    int wr_fd = open(outfile, O_WRONLY);
     dup2(rdwr_pipefds[0], STDIN_FILENO);
     close(rdwr_pipefds[0]);
     dup2(wr_fd, STDOUT_FILENO);
@@ -264,19 +268,24 @@ void exec_pyzy_server() {
     script[pyzy_server_py_len] = '\0';
 
     char* argv[] = {
-      "python", "-ESs", "-", "(pyzy server)",
-      NULL,
-    };
-    char* envp[] = {
+      "python", "-Ss", "-", "(pyzy server)",
       NULL,
     };
 
     char* python_bin = getenv("PYZY_PYTHON");
     if (python_bin == NULL) {
-      python_bin = "/usr/bin/python";
+      python_bin = default_python_path;
     }
-    if ((rc = execv(python_bin, argv))) {
-      fatalf("pyzy: exec_pyzy_server failed: %s\n", rc);
+    char pyzy_python_env[1024];
+    if (sprintf(pyzy_python_env, "PYZY_PYTHON=%s", python_bin) < 0 ) {
+      fatalf("pyzy: exec_pyzy_server failed creating env\n");
+    }
+    char* envp[] = {
+      pyzy_python_env,
+      NULL,
+    };
+    if ((rc = execve(python_bin, argv, envp))) {
+      fatalf("pyzy: exec_pyzy_server failed execve: %s\n", rc);
     }
   } else {
     // parent
