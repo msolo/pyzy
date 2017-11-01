@@ -35,14 +35,12 @@ def preload():
   import io
   import itertools
   import json
-  import md5
   import mimetools
   import operator
   import pickle
   import pipes
   import random
   import re
-  import sha
   import shlex
   import shutil
   import string
@@ -145,6 +143,8 @@ class PyZyServer(object):
     argc = self.recv_int(client_sock)
     argv = [self.recv_str(client_sock) for x in range(argc)]
 
+    signal.alarm(int(os.environ.get('PYZY_MAX_IDLE_SECS', 600)))
+
     import_exc = None
     error_str = ''
     script = None
@@ -219,7 +219,12 @@ class PyZyServer(object):
           print('pyzy:', error_str, file=sys.stderr)
           return_code = 255
         else:
-          child_globals = {'__name__': '__main__'}
+          child_globals = {
+            '__name__': '__main__',
+            '__file__': script,
+            '__package__': None,
+            '__doc__': None,
+            }
           _execfile(script, child_globals)
       except PyZySystemExit as e:
         return_code = e[0]
@@ -259,7 +264,13 @@ def main():
     logging.basicConfig()
     signal.signal(signal.SIGCHLD, sigchld_handler)
     signal.signal(signal.SIGTERM, sigterm_handler)
-    preload()
+    signal.signal(signal.SIGALRM, sigterm_handler)
+    alarm_secs = int(os.environ.get('PYZY_MAX_IDLE_SECS', 600))
+    signal.alarm(alarm_secs)
+    try:
+      preload()
+    except ModuleNotFoundError:
+      pass
     server = PyZyServer()
     server.bind_and_listen()
     server.serve_forever()

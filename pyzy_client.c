@@ -259,16 +259,12 @@ void exec_pyzy_server() {
     dup2(wr_fd, STDERR_FILENO);
     close(wr_fd);
 
-    char script_path[256];
-    if (sprintf(script_path, "/dev/fd/%d", rdwr_pipefds[0]) < 0 ) {
-      fatalf("pyzy: exec_pyzy_server failed creating path\n");
-    }
     char* script = malloc(pyzy_server_py_len+1);
     memcpy(script, pyzy_server_py, pyzy_server_py_len);
     script[pyzy_server_py_len] = '\0';
 
     char* argv[] = {
-      "python", "-Ss", "-", "(pyzy server)",
+      "python", "-ESs", "-", "(pyzy server)",
       NULL,
     };
 
