@@ -1,5 +1,6 @@
-#!/usr/local/bin/python
+from __future__ import print_function
 
+import array
 import errno
 import logging
 import _multiprocessing
@@ -15,8 +16,11 @@ import time
 import traceback
 
 def socket_name():
-  username = pwd.getpwuid(os.getuid()).pw_name
-  return '/tmp/pyzy-%s.sock' % username
+  try:
+    return os.environ['PYZY_SOCKET']
+  except KeyError:
+    username = pwd.getpwuid(os.getuid()).pw_name
+    return '/tmp/pyzy-%s.sock' % username
 
 class TermInterrupt(Exception):
   pass
@@ -41,10 +45,40 @@ def recv(sock, size):
         continue
       raise
 
+def _recv_fds(sock, msglen, maxfds):
+    fds = array.array('i')   # Array of ints
+    msg, ancdata, flags, addr = sock.recvmsg(msglen, socket.CMSG_LEN(maxfds * fds.itemsize))
+    for cmsg_level, cmsg_type, cmsg_data in ancdata:
+        if (cmsg_level == socket.SOL_SOCKET and cmsg_type == socket.SCM_RIGHTS):
+            # Append data, ignoring any truncated integers at the end.
+            fds.fromstring(cmsg_data[:len(cmsg_data) - (len(cmsg_data) % fds.itemsize)])
+    return msg, list(fds)
+
+
+# Python2/3 shenanigans
+if hasattr(_multiprocessing, 'recvfd'):
+  def recvfd(sock):
+    return _multiprocessing.recvfd(sock.fileno())
+else:
+  def recvfd(sock):
+    # 48 the magic size of struct msghdr - not sure if there is a better
+    # way to compute that.
+    _, fds = _recv_fds(sock, 48, 1)
+    return fds[0]
+
+
+# Python2/3 shenanigans
+def _execfile(fname, _globals=None):
+  if sys.version_info.major == 2:
+    execfile(fname, _globals)
+  else:
+    exec(open(fname).read(), _globals)
+  
+
 class PyZyServer(object):
   sock = None
 
-  def connect(self):
+  def bind_and_listen(self):
     self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     self.sock.bind(socket_name())
     self.sock.listen(5)
@@ -61,8 +95,7 @@ class PyZyServer(object):
     cwd = self.recv_str(client_sock)
     envc = self.recv_int(client_sock)
     envv = [self.recv_str(client_sock) for x in range(envc)]
-
-    client_env = dict(x.split('=', 1) for x in envv)
+    client_env = dict(x.decode('utf8').split('=', 1) for x in envv)
 
     old_env = os.environ.copy()
     old_sys_path = sys.path[:]
@@ -70,17 +103,23 @@ class PyZyServer(object):
     os.environ.update(client_env)
     argc = self.recv_int(client_sock)
     argv = [self.recv_str(client_sock) for x in range(argc)]
-    try:
-      script = os.path.abspath(argv[1])
-    except:
-      logging.exception('bad script')
-      return
 
     import_exc = None
+    error_str = ''
+    script = None
+    
+    try:
+      script = os.path.normpath(os.path.join(cwd, argv[1]))
+    except IndexError:
+      error_str = 'no script path specified in argv'
+
+    # pyzy_python = client_env.get('PYZY_PYTHON')
+    # if pyzy_python and pyzy_python != sys.executable:
+    #   error_str = 'PYZY_PYTHON mismatch: %s != %s' % (os.path.realpath(pyzy_python), os.path.realpath(sys.executable))
     if not script in self.script_set:
       if 'PYZY_CACHE_SCRIPT' in client_env:
         # Pass empty dict so __name__ != __main__.
-        execfile(script, {})
+        _execfile(script, {})
         self.script_set.add(script)
         # Protect ourselves against bad practices.
         threads = threading.enumerate()
@@ -96,7 +135,7 @@ class PyZyServer(object):
         else:
           del os.environ[key]
       sys.path[:] = old_sys_path
-      # We can not longer safely fork, so die.
+      # We can no longer safely fork, so die.
       if import_exc:
         raise import_exc
       return
@@ -105,11 +144,10 @@ class PyZyServer(object):
     try:
       sys.path[0:0] = client_env.get('PYTHONPATH', '').split(':')
       os.chdir(cwd)
-      print script, client_env, argc, argv, os.getcwd()
-      fd = client_sock.fileno()
-      stdin_fd = _multiprocessing.recvfd(fd)
-      stdout_fd = _multiprocessing.recvfd(fd)
-      stderr_fd = _multiprocessing.recvfd(fd)
+      # print script, client_env, argc, argv, os.getcwd()
+      stdin_fd = recvfd(client_sock)
+      stdout_fd = recvfd(client_sock)
+      stderr_fd = recvfd(client_sock)
       os.dup2(stdin_fd, 0)
       os.dup2(stdout_fd, 1)
       os.dup2(stderr_fd, 2)
@@ -124,7 +162,7 @@ class PyZyServer(object):
       pid = os.getpid()
       client_sock.send(struct.pack('!I', pid))
     except RuntimeError as e:
-      print >> sys.stderr, e
+      print('pyzy:', e, file=sys.stderr)
       os._exit(1)
       
     return_code = 0
@@ -134,11 +172,15 @@ class PyZyServer(object):
         # time the log will be /dev/null.
         if import_exc:
           raise import_exc
-        child_globals = {'__name__':'__main__'}
-        execfile(script, child_globals)
-      except PyZySystemExit, e:
+        if error_str:
+          print('pyzy:', error_str, file=sys.stderr)
+          return_code = 255
+        else:
+          child_globals = {'__name__': '__main__'}
+          _execfile(script, child_globals)
+      except PyZySystemExit as e:
         return_code = e[0]
-      except Exception, e:
+      except Exception as e:
         traceback.print_exc()
         return_code = 1
       client_sock.send(struct.pack('!II', return_code, pid))
@@ -156,14 +198,15 @@ class PyZyServer(object):
         if e[0] == errno.EINTR:
           continue
         client_sock.close()
-        logging.exception('ERROR:')
+        logging.error('socket error: %s', e)
 
 def sigchld_handler(signum, frame):
   try:
     while os.waitpid(-1, os.WNOHANG)[0]:
       pass
-  except OSError, e:
-    if e[0] != errno.ECHILD:
+  except OSError as e:
+    #if e[0] != errno.ECHILD:
+    if e.errno != errno.ECHILD:
       logging.error('waitpid failed: %s', e)
 
 def sigterm_handler(signum, frame):
@@ -175,7 +218,7 @@ def main():
     signal.signal(signal.SIGCHLD, sigchld_handler)
     signal.signal(signal.SIGTERM, sigterm_handler)
     server = PyZyServer()
-    server.connect()
+    server.bind_and_listen()
     server.serve_forever()
   except (KeyboardInterrupt, TermInterrupt):
     pass
@@ -183,7 +226,7 @@ def main():
     try:
       os.remove(socket_name())
     except Exception as e:
-      print >> sys.stderr, e
+      print('pyzy:', e, file=sys.stderr)
 
 if __name__ == '__main__':
   main()
