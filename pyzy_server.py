@@ -16,12 +16,8 @@ import traceback
 
 
 def preload():
-  import ConfigParser
-  import StringIO
   import argparse
   import base64
-  import cPickle
-  import cStringIO
   import csv
   import collections
   import datetime
@@ -35,7 +31,6 @@ def preload():
   import io
   import itertools
   import json
-  import mimetools
   import operator
   import pickle
   import pipes
@@ -47,10 +42,17 @@ def preload():
   import subprocess
   import tarfile
   import tempfile
-  import urllib2
-  import urlparse
   import zipfile
   import zlib
+  if sys.version_info.major == 2:
+    import ConfigParser
+    import StringIO
+    import cPickle
+    import cStringIO
+    import mimetools
+    import urllib2
+    import urlparse
+    
   
 default_python_path = '/usr/bin/python'
 
@@ -129,6 +131,14 @@ class PyZyServer(object):
     strlen = self.recv_int(client_sock)
     return recv(client_sock, strlen)
 
+  def _child_globals(self, script, name='__main__'):
+    return {
+      '__file__': script,
+      '__name__': name,
+      '__package__': None,
+      '__doc__': None,
+      }
+    
   def handle_connection(self, client_sock):
     client_sock.setblocking(True)
     cwd = self.recv_str(client_sock)
@@ -162,7 +172,7 @@ class PyZyServer(object):
     elif not script in self.script_set:
       if 'PYZY_CACHE_SCRIPT' in client_env:
         # Pass empty dict so __name__ != __main__.
-        _execfile(script, {'__pyzy_preload__':True})
+        _execfile(script, self._child_globals(script, name='__pyzy_preload__'))
         self.script_set.add(script)
         # Protect ourselves against bad practices.
         threads = threading.enumerate()
@@ -219,13 +229,7 @@ class PyZyServer(object):
           print('pyzy:', error_str, file=sys.stderr)
           return_code = 255
         else:
-          child_globals = {
-            '__name__': '__main__',
-            '__file__': script,
-            '__package__': None,
-            '__doc__': None,
-            }
-          _execfile(script, child_globals)
+          _execfile(script, self._child_globals(script))
       except PyZySystemExit as e:
         return_code = e[0]
       except Exception as e:
