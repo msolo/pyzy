@@ -23,23 +23,37 @@ This makes small jobs less intense to start up.
 * send filename, serialized arg list and fd 0,1,2
 * wait for return code
 
-## Building pyzy_client:
+## Building pyzy
 ```
-#!bash
-gcc pyzy_client.c -o pyzy_client
+make
 ```
 
-## Starting the Server:
+## Debugging the Server
+Starting a server by hand lets you see more errors.
 ```
 #!bash
 python pyzy_server.py
 ```
 
-## Exec a script:
+## Exec A Script
 
 ```
 #!bash
-pyzy_client my_script_file.py
+pyzy my_script_file.py
 ```
 
-The pyzy_client.py file is only a proof-of-concept, don't use it.
+## Controlling pyzy
+There are few environment variables that are useful for tuning behavior.
+PYZY_MAX_IDLE_SECS=600
+ * The maximum number of seconds a pyzy process stays idle before exiting.
+PYZY_CACHE_SCRIPT=1
+ * Try to load all the code from the script into the main zygote process. The can be a bit messy with multiple conflicting imports. It's best combined with a dedicated server per-script which is done by using a custom PYZY_SOCKET.
+PYZY_SOCKET=/tmp/pyzy-$LOGNAME
+ * Use a custom socket to find the pyzy server process.
+PYZY_PYTHON=/usr/bin/python
+ * Use the proper python interpreter.
+
+A lot of times you need a tiny wrapper script to wire this all up.
+```
+#!/usr/bin/env PYZY_PYTHON=/usr/bin/python3.6 PYZY_MAX_IDLE_SECS=1800 PYZY_CACHE_SCRIPT=1 PYZY_SOCKET=/tmp/pyzy-myscript /path/myscript.py
+```
