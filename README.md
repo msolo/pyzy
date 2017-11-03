@@ -1,8 +1,8 @@
 # Python Zygote
 
-Keep a warm Python interpreter process that can quickly fork off a new worker.
-This makes small jobs less intense to start up.
+A warm Python interpreter process that can quickly fork off a new worker makes complex programs that are run frequently much less resource intense to start up. It also reduces the RAM required to run multiple copies of the same program.
 
+This example is fairly conservative, since it demonstrates the *least* amount of benefit - that of basically caching the system library. Most applications load a lot more code not included in the system library, so the savings is generally greater.
 
 ```
 time python3.6 -ESs demo/demo3.py 
@@ -54,6 +54,32 @@ A lot of times you need a tiny wrapper script to wire this all up.
 ```
 #!/usr/bin/env PYZY_PYTHON=/usr/bin/python3.6 PYZY_MAX_IDLE_SECS=1800 PYZY_CACHE_SCRIPT=1 PYZY_SOCKET=/tmp/pyzy-myscript /path/myscript.py
 ```
+
+# Caveats
+There is a certain amount of magic here that has some side effects. For instance, imports will only happen once for the lifetime of the server. If code changes, the server needs to be killed manually. Some modules react in odd ways to single initialization. For instance, all child processes may share the same seed for the random module.
+
+# Peculiarities
+Python on OS X is pretty slow to startup. For instance running the simplest script takes 18ms on a MacBookPro6,2 running OS X 10.10, which is half as fast a running it under *virtualized* Linux. (Let that sink in a moment.)
+```
+$ time /usr/local/bin/python2.7 -ESsc 'print "OK"'
+OK
+
+real	0m0.018s
+user	0m0.007s
+sys	0m0.007s
+```
+
+On the same physical hardware, running the same test on Ubuntu 16.04 under VMWare Fusion 6, the results are twice as fast.
+```
+$ time /usr/bin/python -ESsc 'print "OK"'
+OK
+
+real	0m0.009s
+user	0m0.004s
+sys	0m0.000s
+```
+
+I suspect there is some amount of overhead to fork() on OS X. My `dtruss` skills are a bit weak, so I haven't yet investigated further.
 
 # How It Works
 ## Server:
