@@ -72,8 +72,8 @@ class PyZyError(Exception):
 class PyZySystemExit(SystemExit):
   pass
 
-def pyzy_exit(return_code):
-  raise PyZySystemExit(return_code)
+def pyzy_exit(code_or_message):
+  raise PyZySystemExit(code_or_message)
 
 def recv(sock, size):
   while True:
@@ -231,7 +231,11 @@ class PyZyServer(object):
         else:
           _execfile(script, self._child_globals(script))
       except PyZySystemExit as e:
-        return_code = e[0]
+        try:
+          return_code = int(e.code)
+        except ValueError:
+          print(e.code, file=sys.stderr)
+          return_code = 1
       except Exception as e:
         traceback.print_exc()
         return_code = 1
@@ -265,16 +269,13 @@ def sigterm_handler(signum, frame):
         
 def main():
   try:
-    logging.basicConfig()
+    logging.basicConfig(filename='/dev/stderr', level=logging.INFO)
     signal.signal(signal.SIGCHLD, sigchld_handler)
     signal.signal(signal.SIGTERM, sigterm_handler)
     signal.signal(signal.SIGALRM, sigterm_handler)
     alarm_secs = int(os.environ.get('PYZY_MAX_IDLE_SECS', 600))
     signal.alarm(alarm_secs)
-    try:
-      preload()
-    except ModuleNotFoundError:
-      pass
+    preload()
     server = PyZyServer()
     server.bind_and_listen()
     server.serve_forever()
