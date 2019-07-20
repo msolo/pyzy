@@ -115,7 +115,7 @@ def _execfile(fname, _globals=None):
   if sys.version_info.major == 2:
     execfile(fname, _globals)
   else:
-    exec(open(fname).read(), _globals)
+    exec(compile(open(fname).read(), fname, 'exec'), _globals)
 
 # Python2/3 shenanigans
 def _gc_freeze():
