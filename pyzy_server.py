@@ -1,11 +1,14 @@
 from __future__ import print_function
 
 import array
+import atexit
 import errno
+import gc
 import logging
 import _multiprocessing
 import os
 import pwd
+import random
 import signal
 import socket
 import struct
@@ -34,7 +37,6 @@ def preload():
   import operator
   import pickle
   import pipes
-  import random
   import re
   import shlex
   import shutil
@@ -52,8 +54,8 @@ def preload():
     import mimetools
     import urllib2
     import urlparse
-    
-  
+
+
 default_python_path = '/usr/bin/python'
 
 def socket_name():
@@ -92,7 +94,7 @@ def _recv_fds(sock, msglen, maxfds):
     for cmsg_level, cmsg_type, cmsg_data in ancdata:
         if (cmsg_level == socket.SOL_SOCKET and cmsg_type == socket.SCM_RIGHTS):
             # Append data, ignoring any truncated integers at the end.
-            fds.fromstring(cmsg_data[:len(cmsg_data) - (len(cmsg_data) % fds.itemsize)])
+            fds.frombytes(cmsg_data[:len(cmsg_data) - (len(cmsg_data) % fds.itemsize)])
     return msg, list(fds)
 
 
@@ -114,7 +116,40 @@ def _execfile(fname, _globals=None):
     execfile(fname, _globals)
   else:
     exec(open(fname).read(), _globals)
-  
+
+# Python2/3 shenanigans
+def _gc_freeze():
+  if sys.version_info.major == 2:
+    for gen in xrange(3):
+      gc.collect(gen)
+    gc.collect()
+  else:
+    gc.collect()
+    gc.freeze()
+
+# Some modules can get assume fork implies init, which isn't true any more.
+# Rerun code for some codes to restore standard behavior.
+def _fix_child_modules():
+  # Remove any exit handlers - anything registered at this point is not
+  # relevant.
+  if sys.version_info.major == 2:
+    del atexit._exithandlers[:]
+  else:
+    atexit._clear()
+
+  # # the logging module is fun too - it has locks that might be held by a
+  # # thread in the parent process. to prevent intermittent deadlock, you need
+  # # to reset the locks. this just feels dirty.
+  # logging._lock = None
+  # logging._acquireLock()
+  # for handler in logging._handlers:
+  #   # this will overwrite the individual locks on each handler
+  #   handler.createLock()
+  # logging._releaseLock()
+
+  # Make sure each process has a different random seed.
+  random.seed()
+
 
 class PyZyServer(object):
   sock = None
@@ -138,7 +173,7 @@ class PyZyServer(object):
       '__package__': None,
       '__doc__': None,
       }
-    
+
   def handle_connection(self, client_sock):
     client_sock.setblocking(True)
     cwd = self.recv_str(client_sock)
@@ -158,7 +193,7 @@ class PyZyServer(object):
     import_exc = None
     error_str = ''
     script = None
-    
+
     try:
       script = os.path.normpath(os.path.join(cwd, argv[1]))
     except IndexError:
@@ -179,6 +214,8 @@ class PyZyServer(object):
         if len(threads) > 1:
           import_exc = PyZyError('unsafe import created threads', script, repr(threads))
 
+    # Try to keep memory from getting touched during gc to maximize sharing.
+    _gc_freeze()
     if os.fork() != 0:
       # parent process
       # Revert the environment and sys.path.
@@ -204,20 +241,20 @@ class PyZyServer(object):
       os.dup2(stdin_fd, 0)
       os.dup2(stdout_fd, 1)
       os.dup2(stderr_fd, 2)
-      
+
       sys.stdin = os.fdopen(0, 'r')
       sys.stdout = os.fdopen(1, 'w')
       sys.stderr = os.fdopen(2, 'w')
-      
+
       sys.argv = argv[1:]
       sys.exit = pyzy_exit
-      
+
       pid = os.getpid()
       client_sock.send(struct.pack('!I', pid))
     except RuntimeError as e:
       print('pyzy:', e, file=sys.stderr)
       os._exit(1)
-      
+
     return_code = 0
     try:
       try:
@@ -229,20 +266,22 @@ class PyZyServer(object):
           print('pyzy:', error_str, file=sys.stderr)
           return_code = 255
         else:
+          _fix_child_modules()
           _execfile(script, self._child_globals(script))
       except PyZySystemExit as e:
         try:
           return_code = int(e.code)
         except ValueError:
-          print(e.code, file=sys.stderr)
+          print('pyzy: invalid exit code', e.code, file=sys.stderr)
           return_code = 1
-      except Exception as e:
+      except:
         traceback.print_exc()
         return_code = 1
+
       client_sock.send(struct.pack('!II', return_code, pid))
     finally:
       os._exit(return_code)
-    
+
   def serve_forever(self):
     # keep track of scripts we have run
     self.script_set = set()
@@ -266,10 +305,10 @@ def sigchld_handler(signum, frame):
 
 def sigterm_handler(signum, frame):
   raise TermInterrupt
-        
+
 def main():
   try:
-    logging.basicConfig(filename='/dev/stderr', level=logging.INFO)
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     signal.signal(signal.SIGCHLD, sigchld_handler)
     signal.signal(signal.SIGTERM, sigterm_handler)
     signal.signal(signal.SIGALRM, sigterm_handler)
