@@ -44,6 +44,7 @@ def preload():
     import subprocess
     import tarfile
     import tempfile
+    import urllib
     import zipfile
     import zlib
 
@@ -266,8 +267,10 @@ class PyZyServer(object):
             sys.stdin = os.fdopen(0, "r")
             sys.stdout = os.fdopen(1, "w")
             sys.stderr = os.fdopen(2, "w")
-
-            sys.argv = argv[1:]
+            if sys.version_info.major == 2:
+                sys.argv = argv[1:]
+            else:
+                sys.argv = [x.decode("utf8") for x in argv[1:]]
             sys.exit = pyzy_exit
 
             pid = os.getpid()
