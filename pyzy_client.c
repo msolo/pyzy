@@ -1,6 +1,6 @@
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 
@@ -22,7 +22,7 @@
 extern char **environ;
 static char global_error_string[256];
 static int remote_pid = 0;
-static char* default_python_path = "/usr/bin/python";
+static char *default_python_path = "/usr/bin/python";
 
 int seterr(const char *fmt, ...) {
   va_list ap;
@@ -55,17 +55,17 @@ int fatalf(const char *fmt, ...) {
   exit(1);
 }
 
-char* unix_socket_path() {
-  struct passwd* pwuid = getpwuid(getuid());
+char *unix_socket_path() {
+  struct passwd *pwuid = getpwuid(getuid());
   if (pwuid == NULL) {
     fatalf("pyzy: no passwd entry for uid: %d\n", getuid());
   }
-  char* socket_path = getenv("PYZY_SOCKET");
+  char *socket_path = getenv("PYZY_SOCKET");
   if (socket_path != NULL) {
     return socket_path;
   }
-  char* buf = malloc(1024);
-  if (sprintf(buf,"/tmp/pyzy-%s.sock", pwuid->pw_name) < 0) {
+  char *buf = malloc(1024);
+  if (sprintf(buf, "/tmp/pyzy-%s.sock", pwuid->pw_name) < 0) {
     fatalf("pyzy: unix_socket_path failed sprintf\n");
   }
   return buf;
@@ -119,7 +119,7 @@ int send_fd(int unix_fd, int fd) {
   cmsg->cmsg_len = CMSG_LEN(sizeof(int));
   cmsg->cmsg_level = SOL_SOCKET;
   cmsg->cmsg_type = SCM_RIGHTS;
-  * (int *)CMSG_DATA(cmsg) = fd;
+  *(int *)CMSG_DATA(cmsg) = fd;
 
   if ((n = sendmsg(unix_fd, &msg, 0)) < 0)
     return seterr("sendmsg() failed: %s", strerror(errno));
@@ -137,7 +137,7 @@ int send_int(int unix_fd, unsigned int _int) {
   return 0;
 }
 
-int send_string(int unix_fd, char* _string) {
+int send_string(int unix_fd, char *_string) {
   unsigned int len = strlen(_string);
   int rc = send_int(unix_fd, len);
   if (rc) {
@@ -150,7 +150,7 @@ int send_string(int unix_fd, char* _string) {
   return 0;
 }
 
-int send_launch_ctl(int unix_fd, int argc, char** argv) {
+int send_launch_ctl(int unix_fd, int argc, char **argv) {
   int rc;
   int envc = 0;
   while (1) {
@@ -159,7 +159,7 @@ int send_launch_ctl(int unix_fd, int argc, char** argv) {
     }
     envc++;
   }
-  
+
   char cwd[2048];
   if (getcwd(cwd, sizeof(cwd)) == NULL) {
     return -1;
@@ -199,7 +199,7 @@ int send_launch_ctl(int unix_fd, int argc, char** argv) {
   return 0;
 }
 
-int recv_int(int unix_fd, int* rint) {
+int recv_int(int unix_fd, int *rint) {
   ssize_t bytes_read = recv(unix_fd, rint, sizeof(int), 0);
   if (bytes_read != sizeof(int)) {
     return -1;
@@ -208,10 +208,9 @@ int recv_int(int unix_fd, int* rint) {
   return 0;
 }
 
-
-int recv_return_code(int unix_fd, int* proc_rc, int* proc_pid) {
+int recv_return_code(int unix_fd, int *proc_rc, int *proc_pid) {
   int rc_pid_tuple[2];
-  
+
   ssize_t bytes_read = recv(unix_fd, rc_pid_tuple, sizeof(rc_pid_tuple), 0);
   if (bytes_read != 8) {
     return -1;
@@ -227,17 +226,17 @@ void signal_relay(int signal_num) {
     kill(remote_pid, signal_num);
     debug_logf("signal_relay: send %d to pid %d\n", signal_num, remote_pid);
   }
-  //exit(1);
+  // exit(1);
 }
 
 void exec_pyzy_server() {
   int rc;
   int rdwr_pipefds[2];
-  
+
   if ((rc = pipe(rdwr_pipefds))) {
     fatalf("pyzy: exec_pyzy_server failed creating pipe\n");
   }
-  
+
   pid_t pid = fork();
   if (pid == 0) {
     // child
@@ -248,7 +247,7 @@ void exec_pyzy_server() {
       fatalf("pyzy: exec_pyzy_server failed setsid\n");
     }
 
-    char* outfile = "/dev/null";
+    char *outfile = "/dev/null";
     if (getenv("PYZY_DEBUG") != NULL) {
       outfile = "/dev/stderr";
     }
@@ -259,26 +258,25 @@ void exec_pyzy_server() {
     dup2(wr_fd, STDERR_FILENO);
     close(wr_fd);
 
-    char* script = malloc(pyzy_server_py_len+1);
+    char *script = malloc(pyzy_server_py_len + 1);
     memcpy(script, pyzy_server_py, pyzy_server_py_len);
     script[pyzy_server_py_len] = '\0';
 
-    char* argv[] = {
-      "python", "-ESs", "-", "(pyzy server)",
-      NULL,
+    char *argv[] = {
+        "python", "-ESs", "-", "(pyzy server)", NULL,
     };
 
-    char* python_bin = getenv("PYZY_PYTHON");
+    char *python_bin = getenv("PYZY_PYTHON");
     if (python_bin == NULL) {
       python_bin = default_python_path;
     }
     char pyzy_python_env[1024];
-    if (sprintf(pyzy_python_env, "PYZY_PYTHON=%s", python_bin) < 0 ) {
+    if (sprintf(pyzy_python_env, "PYZY_PYTHON=%s", python_bin) < 0) {
       fatalf("pyzy: exec_pyzy_server failed creating env\n");
     }
-    char* envp[] = {
-      pyzy_python_env,
-      NULL,
+    char *envp[] = {
+        pyzy_python_env,
+        NULL,
     };
     if ((rc = execve(python_bin, argv, envp))) {
       fatalf("pyzy: exec_pyzy_server failed execve: %s\n", rc);
@@ -302,7 +300,6 @@ void exec_pyzy_server() {
     close(rdwr_pipefds[1]);
   }
 }
-
 
 int main(int argc, char **argv) {
   /* int script_argc = argc; */
@@ -339,7 +336,7 @@ int main(int argc, char **argv) {
     }
     break;
   }
-  
+
   if (send_launch_ctl(unix_fd, argc, argv) < 0) {
     fatalf("pyzy: send_launch_ctl failed: %s\n", global_error_string);
   }
@@ -351,9 +348,9 @@ int main(int argc, char **argv) {
   debug_logf("remote pid: %d\n", remote_pid);
 
   for (int sig = 1; sig < 32; sig++) {
-    signal(sig, (void*)signal_relay);
+    signal(sig, (void *)signal_relay);
   }
-  
+
   int proc_rc = 0;
   int proc_pid = 0;
   if ((rc = recv_return_code(unix_fd, &proc_rc, &proc_pid))) {
