@@ -56,6 +56,7 @@ def preload():
         import mimetools
         import urllib2
         import urlparse
+    _gc_freeze()
 
 
 default_python_path = "/usr/bin/python"
@@ -194,9 +195,16 @@ class PyZyServer(object):
     def handle_connection(self, client_sock):
         client_sock.setblocking(True)
         cwd = self.recv_str(client_sock)
-        envc = self.recv_int(client_sock)
-        envv = [self.recv_str(client_sock) for x in range(envc)]
-        client_env = dict(x.decode("utf8").split("=", 1) for x in envv)
+
+        client_env = {}
+        env_blob = self.recv_str(client_sock)
+        for kv in env_blob.rstrip(b"\0").split(b"\0"):
+            x = kv.decode("utf8").split("=", 1)
+            if len(x) == 2:
+                k, v = x[0], x[1]
+            else:
+                k, v = x[0], ""
+            client_env[k] = v
 
         old_env = os.environ.copy()
         old_sys_path = sys.path[:]
@@ -235,11 +243,13 @@ class PyZyServer(object):
                     import_exc = PyZyError(
                         "unsafe import created threads", script, repr(threads)
                     )
+                # Try to keep memory from getting touched during gc to maximize sharing.
+                _gc_freeze()
 
-        # Try to keep memory from getting touched during gc to maximize sharing.
-        _gc_freeze()
-        if os.fork() != 0:
+        pid = os.fork()
+        if pid != 0:
             # parent process
+
             # Revert the environment and sys.path.
             for key in os.environ.keys():
                 if key in old_env:
@@ -254,8 +264,8 @@ class PyZyServer(object):
 
         # child process
         try:
-            sys.path[0:0] = client_env.get("PYTHONPATH", "").split(":")
-            os.chdir(cwd)
+            pid = os.getpid()
+            client_sock.send(struct.pack("!I", pid))
             # print script, client_env, argc, argv, os.getcwd()
             stdin_fd = recvfd(client_sock)
             stdout_fd = recvfd(client_sock)
@@ -267,14 +277,14 @@ class PyZyServer(object):
             sys.stdin = os.fdopen(0, "r")
             sys.stdout = os.fdopen(1, "w")
             sys.stderr = os.fdopen(2, "w")
+
+            sys.path[0:0] = client_env.get("PYTHONPATH", "").split(":")
+            os.chdir(cwd)
             if sys.version_info.major == 2:
                 sys.argv = argv[1:]
             else:
                 sys.argv = [x.decode("utf8") for x in argv[1:]]
             sys.exit = pyzy_exit
-
-            pid = os.getpid()
-            client_sock.send(struct.pack("!I", pid))
         except RuntimeError as e:
             print("pyzy:", e, file=sys.stderr)
             os._exit(1)

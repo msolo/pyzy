@@ -150,14 +150,37 @@ int send_string(int unix_fd, char *_string) {
   return 0;
 }
 
+int send_bytes(int unix_fd, char *s, ssize_t len) {
+  int rc = send_int(unix_fd, len);
+  if (rc) {
+    return rc;
+  }
+  ssize_t sent_bytes = send(unix_fd, s, len, 0);
+  if (sent_bytes != len) {
+    return -1;
+  }
+  return 0;
+}
+
 int send_launch_ctl(int unix_fd, int argc, char **argv) {
   int rc;
   int envc = 0;
+  ssize_t env_size = 0;
   while (1) {
     if (environ[envc] == NULL) {
       break;
     }
+    env_size += strlen(environ[envc]) + 1; // reserve a byte for null
     envc++;
+  }
+
+  char *env_blob = malloc(env_size);
+  ssize_t env_i = 0;
+  for (int i = 0; i < envc; i++) {
+    ssize_t l = strlen(environ[i]);
+    memcpy(env_blob + env_i, environ[i], l);
+    env_blob[env_i + l] = '\0';
+    env_i += l + 1;
   }
 
   char cwd[2048];
@@ -169,13 +192,8 @@ int send_launch_ctl(int unix_fd, int argc, char **argv) {
   if ((rc = send_string(unix_fd, cwd))) {
     return rc;
   }
-  if ((rc = send_int(unix_fd, envc))) {
+  if ((rc = send_bytes(unix_fd, env_blob, env_size))) {
     return rc;
-  }
-  for (int i = 0; i < envc; i++) {
-    if ((rc = send_string(unix_fd, environ[i]))) {
-      return rc;
-    }
   }
   if ((rc = send_int(unix_fd, argc))) {
     return rc;
