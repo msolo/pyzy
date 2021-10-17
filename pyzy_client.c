@@ -302,17 +302,6 @@ void exec_pyzy_server() {
 }
 
 int main(int argc, char **argv) {
-  /* int script_argc = argc; */
-  /* char **script_argv = argv; */
-  /* int shutdown = 0; */
-  /* int cache_script = 0; */
-  /* for (int i = 1; i < argc; i++) { */
-  /*   if (argv[i][0] == '-') { */
-  /*     if (strcmp(argv[i], "--shutdown") == 0) { */
-  /*     } */
-  /*   } */
-  /* } */
-
   int unix_fd;
   int started = 0;
   struct timespec sleep;
