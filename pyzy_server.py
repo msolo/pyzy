@@ -206,10 +206,6 @@ class PyZyServer(object):
                 k, v = x[0], ""
             client_env[k] = v
 
-        old_env = os.environ.copy()
-        old_sys_path = sys.path[:]
-
-        os.environ.update(client_env)
         argc = self.recv_int(client_sock)
         argv = [self.recv_str(client_sock) for x in range(argc)]
 
@@ -225,7 +221,7 @@ class PyZyServer(object):
             error_str = "no script path specified in argv"
 
         client_python = client_env.get("PYZY_PYTHON", default_python_path)
-        server_python = old_env.get("PYZY_PYTHON")
+        server_python = os.environ.get("PYZY_PYTHON")
 
         if client_python != server_python:
             error_str = "PYZY_PYTHON mismatch: %s != %s" % (
@@ -234,6 +230,10 @@ class PyZyServer(object):
             )
         elif not script in self.script_set:
             if "PYZY_CACHE_SCRIPT" in client_env:
+                old_env = os.environ.copy()
+                old_sys_path = sys.path[:]
+                os.environ.update(client_env)
+
                 # Pass empty dict so __name__ != __main__.
                 _execfile(script, self._child_globals(script, name="__pyzy_preload__"))
                 self.script_set.add(script)
@@ -249,14 +249,14 @@ class PyZyServer(object):
         pid = os.fork()
         if pid != 0:
             # parent process
-
-            # Revert the environment and sys.path.
-            for key in os.environ.keys():
-                if key in old_env:
-                    os.environ[key] = old_env[key]
-                else:
-                    del os.environ[key]
-            sys.path[:] = old_sys_path
+            if "PYZY_CACHE_SCRIPT" in client_env:
+                # Revert the environment and sys.path.
+                for key in os.environ.keys():
+                    if key in old_env:
+                        os.environ[key] = old_env[key]
+                    else:
+                        del os.environ[key]
+                sys.path[:] = old_sys_path
             # We can no longer safely fork, so die.
             if import_exc:
                 raise import_exc
